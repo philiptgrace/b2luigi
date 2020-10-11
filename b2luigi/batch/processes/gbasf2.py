@@ -129,6 +129,8 @@ class Gbasf2Process(BatchProcess):
           printing of of the job summaries, that is the number of jobs in different states in a gbasf2 project.
         - ``gbasf2_max_retries``: Default to 0. Maximum number of times that each job in the project can be automatically
           rescheduled until the project is declared as failed.
+        - ``gbasf2_max_download_retries``: Defaults to 0. Maximum number of times to
+          retry downloading output files for a project if a failure is encountered.
         - ``gbasf2_download_dataset``: Defaults to ``True``. Disable this setting if you don't want to download the
           output dataset from the grid on job success. As you can't use the downloaded dataset as an output target for luigi,
           you should then use the provided ``Gbasf2GridProjectTarget``, as shown in the following example:
@@ -215,6 +217,7 @@ class Gbasf2Process(BatchProcess):
         self.dirac_user = get_dirac_user()
         #: Maximum number of times that each job in the project can be rescheduled until the project is declared as failed.
         self.max_retries = get_setting("gbasf2_max_retries", default=0, task=self.task)
+        self.max_download_retries = get_setting("gbasf2_max_download_retries", default=0, task=self.task)
 
         #: Store number of times each job had been rescheduled
         self.n_retries_by_job = Counter()
@@ -309,7 +312,7 @@ class Gbasf2Process(BatchProcess):
         """
         self._download_logs()
         if get_setting("gbasf2_download_dataset", default=True, task=self.task):
-            self._download_dataset()
+            self._try_download_dataset()
 
     def _on_failure_action(self):
         """
@@ -500,7 +503,7 @@ class Gbasf2Process(BatchProcess):
         temporary directories.
         """
         if not check_dataset_exists_on_grid(self.gbasf2_project_name, dirac_user=self.dirac_user):
-            raise RuntimeError(f"Not dataset to download under project name {self.gbasf2_project_name}")
+            raise FileNotFoundError(f"Not dataset to download under project name {self.gbasf2_project_name}")
         task_output_dict = flatten_to_dict(self.task.output())
         for output_file_name, output_target in task_output_dict.items():
             output_dir_path = output_target.path
@@ -537,7 +540,7 @@ class Gbasf2Process(BatchProcess):
                 stdout = run_with_gbasf2(ds_get_command, cwd=tmpdir_path, capture_output=True).stdout
                 print(stdout)
                 if "No file found" in stdout:
-                    raise RuntimeError(f"No output data for gbasf2 project {self.gbasf2_project_name} found.")
+                    raise FileNotFoundError(f"No output data for gbasf2 project {self.gbasf2_project_name} found.")
                 tmp_output_dir = os.path.join(tmpdir_path, self.gbasf2_project_name)
                 downloaded_dataset_basenames = set(os.listdir(tmp_output_dir))
                 if output_dataset_basenames == downloaded_dataset_basenames:
@@ -553,6 +556,31 @@ class Gbasf2Process(BatchProcess):
                         "\nDownloaded files:\n{}".format("\n".join(downloaded_dataset_basenames)) +
                         "\nFiles on the grid:\n{}".format("\n".join(output_dataset_basenames))
                     )
+
+    def _try_download_dataset(self):
+        """
+        Wrap the ``_download_dataset`` method in a try-except block, and attempt to
+        download datasets ``gbasf2_max_download_retries + 1`` times.
+        """
+        for attempt in range(self.max_download_retries + 1):
+            try:
+                self._download_dataset()
+            except RuntimeError as e:
+                error = e
+                if attempt < self.max_download_retries:
+                    RemainingRetries = self.max_download_retries - attempt
+                    warnings.warn(
+                        f"Failed to download all files in project {self.gbasf2_project_name}. "
+                        f"Retrying download. ({RemainingRetries} retr{'y' if RemainingRetries == 1 else 'ies'} remaining)"
+                    )
+            else:
+                break
+        else:
+            raise RuntimeError(
+                f"Failed to download all files in project {self.gbasf2_project_name}, "
+                f"with {self.max_download_retries + 1} attempt{'s'*(self.max_download_retries > 0)}."
+            ) from error
+
 
     def _download_logs(self):
         """
