@@ -129,6 +129,8 @@ class Gbasf2Process(BatchProcess):
           printing of of the job summaries, that is the number of jobs in different states in a gbasf2 project.
         - ``gbasf2_max_retries``: Default to 0. Maximum number of times that each job in the project can be automatically
           rescheduled until the project is declared as failed.
+        - ``gbasf2_max_download_retries``: Defaults to 0. Maximum number of times to
+          retry downloading output files for a project if a failure is encountered.
         - ``gbasf2_download_dataset``: Defaults to ``True``. Disable this setting if you don't want to download the
           output dataset from the grid on job success. As you can't use the downloaded dataset as an output target for luigi,
           you should then use the provided ``Gbasf2GridProjectTarget``, as shown in the following example:
@@ -215,6 +217,7 @@ class Gbasf2Process(BatchProcess):
         self.dirac_user = get_dirac_user()
         #: Maximum number of times that each job in the project can be rescheduled until the project is declared as failed.
         self.max_retries = get_setting("gbasf2_max_retries", default=0, task=self.task)
+        self.max_download_retries = get_setting("gbasf2_max_download_retries", default=0, task=self.task)
 
         #: Store number of times each job had been rescheduled
         self.n_retries_by_job = Counter()
@@ -500,7 +503,7 @@ class Gbasf2Process(BatchProcess):
         temporary directories.
         """
         if not check_dataset_exists_on_grid(self.gbasf2_project_name, dirac_user=self.dirac_user):
-            raise RuntimeError(f"Not dataset to download under project name {self.gbasf2_project_name}")
+            raise FileNotFoundError(f"Not dataset to download under project name {self.gbasf2_project_name}")
         task_output_dict = flatten_to_dict(self.task.output())
         for output_file_name, output_target in task_output_dict.items():
             output_dir_path = output_target.path
@@ -534,25 +537,43 @@ class Gbasf2Process(BatchProcess):
             with tempfile.TemporaryDirectory(dir=output_dir_parent) as tmpdir_path:
                 ds_get_command = shlex.split(f"gb2_ds_get --force {dataset_query_string}")
                 print("Downloading dataset with command ", " ".join(ds_get_command))
-                stdout = run_with_gbasf2(ds_get_command, cwd=tmpdir_path, capture_output=True).stdout
-                print(stdout)
-                if "No file found" in stdout:
-                    raise RuntimeError(f"No output data for gbasf2 project {self.gbasf2_project_name} found.")
-                tmp_output_dir = os.path.join(tmpdir_path, self.gbasf2_project_name)
-                downloaded_dataset_basenames = set(os.listdir(tmp_output_dir))
-                if output_dataset_basenames == downloaded_dataset_basenames:
-                    print(f"Download of {self.gbasf2_project_name} files successful.\n"
-                          f"Moving output files to directory: {output_dir_path}")
-                    if os.path.exists(output_dir_path):
-                        shutil.rmtree(output_dir_path)
-                    shutil.move(src=tmp_output_dir, dst=output_dir_path)
+                for attempt in range(self.max_download_retries + 1):
+                    try:
+                        stdout = run_with_gbasf2(ds_get_command, cwd=tmpdir_path, capture_output=True).stdout
+                        print(stdout)
+                        if "No file found" in stdout:
+                            raise FileNotFoundError(f"No output data for gbasf2 project {self.gbasf2_project_name} found.")
+                        tmp_output_dir = os.path.join(tmpdir_path, self.gbasf2_project_name)
+                        downloaded_dataset_basenames = set(os.listdir(tmp_output_dir))
+                        if output_dataset_basenames == downloaded_dataset_basenames:
+                            print(f"Download of {self.gbasf2_project_name} files successful.\n"
+                                  f"Moving output files to directory: {output_dir_path}")
+                            if os.path.exists(output_dir_path):
+                                shutil.rmtree(output_dir_path)
+                            shutil.move(src=tmp_output_dir, dst=output_dir_path)
+                        else:
+                            raise RuntimeError(
+                                f"The downloaded set of files in {tmp_output_dir} is not equal to the " +
+                                f"list of dataset files on the grid for project {self.gbasf2_project_name}." +
+                                "\nDownloaded files:\n{}".format("\n".join(downloaded_dataset_basenames)) +
+                                "\nFiles on the grid:\n{}".format("\n".join(output_dataset_basenames))
+                            )
+                    except RuntimeError as e:
+                        error = e
+                        if attempt < self.max_download_retries:
+                            RemainingRetries = self.max_download_retries - attempt
+                            print(
+                                f"Failed to download all files in project {self.gbasf2_project_name}. "
+                                f"Retrying download. ({RemainingRetries} retr{'y' if RemainingRetries == 1 else 'ies'} remaining)"
+                            )
+                    else:
+                        break
                 else:
                     raise RuntimeError(
-                        f"The downloaded set of files in {tmp_output_dir} is not equal to the " +
-                        f"list of dataset files on the grid for project {self.gbasf2_project_name}." +
-                        "\nDownloaded files:\n{}".format("\n".join(downloaded_dataset_basenames)) +
-                        "\nFiles on the grid:\n{}".format("\n".join(output_dataset_basenames))
-                    )
+                        f"Failed to download all files in project {self.gbasf2_project_name}, "
+                        f"with {self.max_download_retries + 1} attempt{'s'*(self.max_download_retries > 0)}."
+                    ) from error
+
 
     def _download_logs(self):
         """
