@@ -123,6 +123,12 @@ class Gbasf2Process(BatchProcess):
 
         - ``gbasf2_install_directory``: Defaults to ``~/gbasf2KEK``. If you installed gbasf2 into another
           location, you have to change that setting accordingly.
+        - ``gbasf2_default_proxy_lifetime``: Integer defaulting to 48. When initializing a
+          proxy, set the proxy lifetime to this number of hours. Cannot be set as a
+          per-task setting.
+        - ``gbasf2_minimum_proxy_lifetime``: Integer defaulting to 24. When running
+          ``gb2_*`` commands, re-initialize the proxy if the remaining time is less than
+          this number of hours. Cannot be set as a per-task setting.
         - ``gbasf2_release``: Defaults to the release of your currently set up basf2 release.
           Set this if you want the jobs to use another release on the grid.
         - ``gbasf2_print_status_updates``: Defaults to ``True``. By setting it to ``False`` you can turn off the
@@ -770,20 +776,30 @@ def get_dirac_user():
 
 def setup_dirac_proxy():
     """
-    Runs ``gb2_proxy_init -g belle`` if there's no active dirac proxy. If there is, do nothing.
+    Run ``gb2_proxy_init -g belle`` if there's no active dirac proxy, or if the
+    existing proxy has a lifetime less than the value (in hours) of the setting
+    ``gbasf2_minimum_proxy_lifetime``. If the proxy is already active with a sufficient
+    lifetime, then do nothing.
     """
     check_proxy_initizalized_script_path = os.path.join(
         os.path.dirname(os.path.realpath(__file__)),
         "gbasf2_utils/check_if_dirac_proxy_is_initialized.py"
     )
+
+    minimum_proxy_lifetime = get_setting("gbasf2_minimum_proxy_lifetime", default=24)
+    default_proxy_lifetime = get_setting("gbasf2_default_proxy_lifetime", default=48)
+
     # first run script to check if proxy is already alive or needs to be initalized
     # setting ``initalize_proxy=False`` is vital here, otherwise we get an infinite loop
-    proc = run_with_gbasf2([check_proxy_initizalized_script_path], ensure_proxy_initialized=False, check=False)
+    proc = run_with_gbasf2(
+        [check_proxy_initizalized_script_path, str(minimum_proxy_lifetime)],
+        ensure_proxy_initialized=False, check=False
+    )
     # if returncode of the script is 0, that means that proxy is already alive
     if not proc.returncode:
         return
     # initiallize proxy
-    run_with_gbasf2(shlex.split("gb2_proxy_init -g belle"))
+    run_with_gbasf2(shlex.split(f"gb2_proxy_init -g belle -v {default_proxy_lifetime}:00"))
 
 
 def get_unique_project_name(task):
