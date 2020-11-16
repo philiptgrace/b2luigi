@@ -446,6 +446,11 @@ class Gbasf2Process(BatchProcess):
         if jobtype is not False:
             gbasf2_command_str += f" --jobtype {jobtype} "
 
+        # number of input files per job
+        nFilesPerJob = get_setting("gbasf2_n_input_files", default=False, task=self.task)
+        if nFilesPerJob is not False:
+            gbasf2_command_str += f" --input_nfiles {nFilesPerJob} "
+
         # additional basf2 options to use on grid
         basf2opt = get_setting("gbasf2_basf2opt", default=False, task=self.task)
         if basf2opt is not False:
