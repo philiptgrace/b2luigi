@@ -430,7 +430,8 @@ class Gbasf2Process(BatchProcess):
         # in that deleted jobs are killed and removed from the job database,
         # while only killed jobs can be restarted.
         command = shlex.split(f"gb2_job_kill --force --user {self.dirac_user} -p {self.gbasf2_project_name}")
-        run_with_gbasf2(command)
+        # run_with_gbasf2(command)
+        # WHY WOULD YOU KILL THE JOBS????
 
     def _build_gbasf2_submit_command(self):
         """
