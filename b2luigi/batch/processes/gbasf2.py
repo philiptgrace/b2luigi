@@ -666,11 +666,8 @@ class Gbasf2Process(BatchProcess):
             # Any further time is based on the list of files from failed downloads
             else:
                 # Extract list of LFNs from failed_files.txt, and directly pass to -f argument
-                with open(monitoring_failed_downloads_file) as f:
-                    failed_files = filter(None, [re.sub(" in .*$", "", lpn.strip()) for lpn in f.read().split("\n")])
-                for failed_file in failed_files:
-                    ds_get_command = shlex.split(f"gb2_ds_get --force -f {failed_file}")
-                    print("Downloading remaining file from dataset with command ", " ".join(ds_get_command))
+                ds_get_command = shlex.split(f"gb2_ds_get --force {dataset_query_string}")
+                print("Retrying failed downloads. Downloading dataset with command ", " ".join(ds_get_command))
 
             stdout = run_with_gbasf2(ds_get_command, cwd=tmp_output_dir_path, capture_output=True).stdout
             print(stdout)
